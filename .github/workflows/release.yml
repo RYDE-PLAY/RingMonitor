@@ -1,0 +1,62 @@
+name: Release macOS app
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release arm64 app
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build app
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          case "$RELEASE_TAG" in
+            v[0-9]*)
+              APP_VERSION="${RELEASE_TAG#v}"
+              ;;
+            *)
+              echo "Release tags must look like v0.1.0" >&2
+              exit 1
+              ;;
+          esac
+
+          test "$(uname -m)" = "arm64"
+          APP_VERSION="$APP_VERSION" ./build_app.sh
+
+      - name: Verify app bundle
+        run: |
+          plutil -lint RingMonitor.app/Contents/Info.plist
+          codesign --verify --deep --strict RingMonitor.app
+          file RingMonitor.app/Contents/MacOS/RingMonitor | grep -q arm64
+
+      - name: Package app
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          ARCHIVE="RingMonitor-$RELEASE_TAG-macos-arm64.zip"
+          ditto -c -k --keepParent RingMonitor.app "$ARCHIVE"
+          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "RingMonitor $RELEASE_TAG" \
+            --generate-notes \
+            "RingMonitor-$RELEASE_TAG-macos-arm64.zip" \
+            "RingMonitor-$RELEASE_TAG-macos-arm64.zip.sha256"
