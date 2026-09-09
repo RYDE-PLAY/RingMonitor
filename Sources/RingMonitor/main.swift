@@ -945,9 +945,6 @@ private final class MenuBarController: NSObject {
     private func updateStatusItemLayout() {
         let width = StatusItemLayout.width(forNetworkProgress: networkWidthProgress)
         statusItem.length = width
-        if let button = statusItem.button {
-            statusView.frame = button.bounds
-        }
     }
 
     private func beginNetworkPhase(
@@ -1135,7 +1132,20 @@ private final class MenuBarController: NSObject {
         refreshNetworkSelection()
         sampleAndUpdate()
 
-        if networkEnabled {
+        let targetState = networkEnabled
+        // Let AppKit finish dismissing the menu before changing the status
+        // item's length. Doing both in the same tracking cycle can make the
+        // status bar reflow in two visible steps.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.networkEnabled == targetState else { return }
+            self.startNetworkTransition(to: targetState)
+        }
+    }
+
+    private func startNetworkTransition(to enabled: Bool) {
+        guard networkEnabled == enabled else { return }
+
+        if enabled {
             networkSampleReady = false
             networkContentProgress = 0
             statusView.setNetworkVisibility(progress: 0, fadingOut: false)
