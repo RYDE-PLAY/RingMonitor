@@ -248,6 +248,8 @@ private final class StatusItemView: NSView {
 
     private var metrics = SystemMetrics()
     private var networkEnabled = true
+    private var networkVisibilityProgress: CGFloat = 1
+    private var networkFadingOut = false
     private var displayedRingValues = [0.0, 0.0, 0.0]
     private var animationStartValues = [0.0, 0.0, 0.0]
     private var animationTargetValues = [0.0, 0.0, 0.0]
@@ -329,6 +331,12 @@ private final class StatusItemView: NSView {
         needsDisplay = true
     }
 
+    func setNetworkVisibility(progress: CGFloat, fadingOut: Bool) {
+        networkVisibilityProgress = min(max(progress, 0), 1)
+        networkFadingOut = fadingOut
+        needsDisplay = true
+    }
+
     @objc private func animateRings(_ timer: Timer) {
         let elapsed = ProcessInfo.processInfo.systemUptime - animationStartUptime
         let linearProgress = min(max(elapsed / animationDuration, 0), 1)
@@ -391,20 +399,24 @@ private final class StatusItemView: NSView {
             path.stroke()
         }
 
-        guard networkEnabled, metrics.networkSampleValid else { return }
+        guard networkVisibilityProgress > 0 else { return }
 
         let attributes = Self.networkAttributes()
         drawRate(
             Self.formatRate(metrics.uploadBytesPerSecond),
             arrow: "↑",
             y: 9.2,
-            attributes: attributes
+            attributes: attributes,
+            visibilityProgress: networkVisibilityProgress,
+            fadingOut: networkFadingOut
         )
         drawRate(
             Self.formatRate(metrics.downloadBytesPerSecond),
             arrow: "↓",
             y: -1.1,
-            attributes: attributes
+            attributes: attributes,
+            visibilityProgress: networkVisibilityProgress,
+            fadingOut: networkFadingOut
         )
     }
 
@@ -420,14 +432,80 @@ private final class StatusItemView: NSView {
         _ rate: RateDisplay,
         arrow: String,
         y: CGFloat,
-        attributes: [NSAttributedString.Key: Any]
+        attributes: [NSAttributedString.Key: Any],
+        visibilityProgress: CGFloat,
+        fadingOut: Bool
     ) {
         let valueWidth = (rate.value as NSString).size(withAttributes: attributes).width
         let valueX = StatusItemLayout.unitX - StatusItemLayout.unitGap - valueWidth
 
-        arrow.draw(at: NSPoint(x: StatusItemLayout.textStartX, y: y), withAttributes: attributes)
-        rate.value.draw(at: NSPoint(x: valueX, y: y), withAttributes: attributes)
-        rate.unit.draw(at: NSPoint(x: StatusItemLayout.unitX, y: y), withAttributes: attributes)
+        arrow.draw(
+            at: NSPoint(x: StatusItemLayout.textStartX, y: y),
+            withAttributes: Self.networkAttributes(
+                basedOn: attributes,
+                alpha: Self.networkTextAlpha(
+                    at: StatusItemLayout.textStartX,
+                    visibilityProgress: visibilityProgress,
+                    fadingOut: fadingOut
+                )
+            )
+        )
+
+        rate.value.draw(
+            at: NSPoint(x: valueX, y: y),
+            withAttributes: Self.networkAttributes(
+                basedOn: attributes,
+                alpha: Self.networkTextAlpha(
+                    at: valueX,
+                    visibilityProgress: visibilityProgress,
+                    fadingOut: fadingOut
+                )
+            )
+        )
+        rate.unit.draw(
+            at: NSPoint(x: StatusItemLayout.unitX, y: y),
+            withAttributes: Self.networkAttributes(
+                basedOn: attributes,
+                alpha: Self.networkTextAlpha(
+                    at: StatusItemLayout.unitX,
+                    visibilityProgress: visibilityProgress,
+                    fadingOut: fadingOut
+                )
+            )
+        )
+    }
+
+    private static func networkAttributes(
+        basedOn attributes: [NSAttributedString.Key: Any],
+        alpha: CGFloat
+    ) -> [NSAttributedString.Key: Any] {
+        var adjusted = attributes
+        let baseColor = (attributes[.foregroundColor] as? NSColor) ?? NSColor.labelColor
+        adjusted[.foregroundColor] = baseColor.withAlphaComponent(min(max(alpha, 0), 1))
+        return adjusted
+    }
+
+    private static func networkTextAlpha(
+        at x: CGFloat,
+        visibilityProgress: CGFloat,
+        fadingOut: Bool
+    ) -> CGFloat {
+        let contentWidth = StatusItemLayout.fullWidth - StatusItemLayout.textStartX
+        let normalizedX = min(max((x - StatusItemLayout.textStartX) / contentWidth, 0), 1)
+        let feather: CGFloat = 0.22
+
+        if fadingOut {
+            let hideProgress = 1 - visibilityProgress
+            let edge = hideProgress - feather
+            return smoothStep((normalizedX - edge) / feather)
+        }
+
+        return smoothStep((visibilityProgress - normalizedX) / feather)
+    }
+
+    private static func smoothStep(_ value: CGFloat) -> CGFloat {
+        let clamped = min(max(value, 0), 1)
+        return clamped * clamped * (3 - 2 * clamped)
     }
 
     private static func formatRate(_ bytesPerSecond: Double) -> RateDisplay {
@@ -559,6 +637,12 @@ private enum MenuLanguage: String, CaseIterable {
 
 @MainActor
 private final class MenuBarController: NSObject {
+    private enum NetworkTransitionPhase: Equatable {
+        case hidingContent
+        case waitingForSample
+        case revealingContent
+    }
+
     private let statusItem: NSStatusItem
     private let statusView: StatusItemView
     private let collector = MetricsCollector()
@@ -577,6 +661,14 @@ private final class MenuBarController: NSObject {
     private var frequencyMenuItems: [NSMenuItem] = []
     private var languageMenuItems: [NSMenuItem] = []
     private let languageMenu = NSMenu()
+    private var networkTransitionTimer: Timer?
+    private var networkTransitionPhase: NetworkTransitionPhase?
+    private var networkTransitionStartUptime: TimeInterval = 0
+    private var networkTransitionDuration: TimeInterval = 0
+    private var networkTransitionStartValue: CGFloat = 0
+    private var networkTransitionTargetValue: CGFloat = 0
+    private var networkContentProgress: CGFloat = 1
+    private var networkSampleReady = true
 
     private static let updateIntervalKey = "updateInterval"
     private static let ringVisibilityKey = "ringVisibility"
@@ -592,6 +684,7 @@ private final class MenuBarController: NSObject {
         ringEnabled = Self.loadRingVisibility()
         networkEnabled = Self.loadNetworkVisibility()
         currentLanguage = Self.loadLanguage()
+        networkContentProgress = networkEnabled ? 1 : 0
 
         let initialWidth = StatusItemLayout.width(networkEnabled: networkEnabled)
         statusItem = NSStatusBar.system.statusItem(withLength: initialWidth)
@@ -628,6 +721,7 @@ private final class MenuBarController: NSObject {
         statusView.setAccessibilityElement(true)
         statusView.setAccessibilityRole(.button)
         statusView.setAccessibilityLabel(currentLanguage.accessibilityLabel)
+        statusView.setNetworkVisibility(progress: networkContentProgress, fadingOut: false)
 
         buildMenu()
         sampleAndUpdate()
@@ -832,10 +926,110 @@ private final class MenuBarController: NSObject {
             enabledRings: ringEnabled,
             networkEnabled: networkEnabled
         )
+
+        guard networkEnabled, metrics.networkSampleValid, !networkSampleReady else { return }
+
+        networkSampleReady = true
+        if networkTransitionPhase == .waitingForSample {
+            beginNetworkPhase(
+                .revealingContent,
+                from: networkContentProgress,
+                to: 1,
+                duration: 0.12,
+                fadingOut: false
+            )
+        }
     }
 
     private func updateStatusItemLayout() {
         statusItem.length = StatusItemLayout.width(networkEnabled: networkEnabled)
+    }
+
+    private func beginNetworkPhase(
+        _ phase: NetworkTransitionPhase,
+        from: CGFloat,
+        to: CGFloat,
+        duration: TimeInterval,
+        fadingOut: Bool
+    ) {
+        networkTransitionTimer?.invalidate()
+        networkTransitionPhase = phase
+        networkTransitionStartValue = from
+        networkTransitionTargetValue = to
+        networkTransitionStartUptime = ProcessInfo.processInfo.systemUptime
+        networkTransitionDuration = duration
+
+        switch phase {
+        case .hidingContent, .revealingContent:
+            networkContentProgress = from
+            statusView.setNetworkVisibility(progress: from, fadingOut: fadingOut)
+        case .waitingForSample:
+            break
+        }
+
+        let timer = Timer(
+            timeInterval: 1.0 / 30.0,
+            target: self,
+            selector: #selector(animateNetworkTransition(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+        timer.tolerance = 0.01
+        RunLoop.main.add(timer, forMode: .common)
+        networkTransitionTimer = timer
+    }
+
+    private func waitForNetworkSample() {
+        networkTransitionTimer?.invalidate()
+        networkTransitionTimer = nil
+        networkTransitionPhase = .waitingForSample
+    }
+
+    private func finishNetworkTransition() {
+        networkTransitionTimer?.invalidate()
+        networkTransitionTimer = nil
+        networkTransitionPhase = nil
+
+        let finalProgress: CGFloat = networkEnabled ? 1 : 0
+        networkContentProgress = finalProgress
+        updateStatusItemLayout()
+        statusView.setNetworkVisibility(progress: finalProgress, fadingOut: false)
+    }
+
+    @objc private func animateNetworkTransition(_ timer: Timer) {
+        guard let phase = networkTransitionPhase else {
+            timer.invalidate()
+            networkTransitionTimer = nil
+            return
+        }
+
+        let elapsed = ProcessInfo.processInfo.systemUptime - networkTransitionStartUptime
+        let linearProgress = min(max(elapsed / networkTransitionDuration, 0), 1)
+        let easedProgress = linearProgress * linearProgress * (3 - 2 * linearProgress)
+        let value = networkTransitionStartValue
+            + (networkTransitionTargetValue - networkTransitionStartValue) * CGFloat(easedProgress)
+
+        switch phase {
+        case .hidingContent:
+            networkContentProgress = value
+            statusView.setNetworkVisibility(progress: value, fadingOut: true)
+        case .revealingContent:
+            networkContentProgress = value
+            statusView.setNetworkVisibility(progress: value, fadingOut: false)
+        case .waitingForSample:
+            return
+        }
+
+        guard linearProgress >= 1 else { return }
+
+        switch phase {
+        case .hidingContent:
+            finishNetworkTransition()
+        case .waitingForSample:
+            break
+        case .revealingContent:
+            finishNetworkTransition()
+        }
     }
 
     private func showMenu() {
@@ -919,7 +1113,32 @@ private final class MenuBarController: NSObject {
         // status bar reflow in two visible steps.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.networkEnabled == targetState else { return }
-            self.updateStatusItemLayout()
+            self.startNetworkTransition(to: targetState)
+        }
+    }
+
+    private func startNetworkTransition(to enabled: Bool) {
+        guard networkEnabled == enabled else { return }
+
+        if enabled {
+            networkSampleReady = false
+            networkContentProgress = 0
+            statusView.setNetworkVisibility(progress: 0, fadingOut: false)
+            // Reflow the status bar once, after the menu has disappeared.
+            // Animating NSStatusItem.length frame by frame makes macOS lay
+            // out every neighboring item repeatedly, which causes the
+            // visible double-step and gray reflow artifacts.
+            updateStatusItemLayout()
+            waitForNetworkSample()
+        } else {
+            networkSampleReady = false
+            beginNetworkPhase(
+                .hidingContent,
+                from: networkContentProgress,
+                to: 0,
+                duration: 0.12,
+                fadingOut: true
+            )
         }
     }
 
