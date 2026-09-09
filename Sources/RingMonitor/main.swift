@@ -677,6 +677,7 @@ private final class MenuBarController: NSObject {
     private static let defaultRingVisibility = [true, true, true]
     private static let defaultNetworkVisibility = true
     private static let supportedIntervals: [TimeInterval] = [1, 5, 10, 30, 60]
+    private static let networkContentAnimationDuration: TimeInterval = 1.0
 
     override init() {
         let savedInterval = UserDefaults.standard.double(forKey: Self.updateIntervalKey)
@@ -935,7 +936,7 @@ private final class MenuBarController: NSObject {
                 .revealingContent,
                 from: networkContentProgress,
                 to: 1,
-                duration: 0.12,
+                duration: Self.networkContentAnimationDuration,
                 fadingOut: false
             )
         }
@@ -1136,7 +1137,7 @@ private final class MenuBarController: NSObject {
                 .hidingContent,
                 from: networkContentProgress,
                 to: 0,
-                duration: 0.12,
+                duration: Self.networkContentAnimationDuration,
                 fadingOut: true
             )
         }
