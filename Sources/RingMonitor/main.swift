@@ -22,12 +22,20 @@ private final class MetricsCollector {
     private var previousNetworkCounters: NetworkCounters?
     private var previousSampleTime = ProcessInfo.processInfo.systemUptime
 
-    func sample() -> SystemMetrics {
+    func sample(networkEnabled: Bool) -> SystemMetrics {
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = max(now - previousSampleTime, 0.001)
         previousSampleTime = now
 
-        let network = sampleNetwork(elapsed: elapsed)
+        let network: (upload: Double, download: Double)
+        if networkEnabled {
+            network = sampleNetwork(elapsed: elapsed)
+        } else {
+            // Start a fresh delta window when network monitoring is enabled
+            // again, rather than reporting the bytes accumulated while hidden.
+            previousNetworkCounters = nil
+            network = (0, 0)
+        }
 
         return SystemMetrics(
             cpu: sampleCPU(),
@@ -234,6 +242,7 @@ private final class StatusItemView: NSView {
     }
 
     private var metrics = SystemMetrics()
+    private var networkEnabled = true
     private var displayedRingValues = [0.0, 0.0, 0.0]
     private var animationStartValues = [0.0, 0.0, 0.0]
     private var animationTargetValues = [0.0, 0.0, 0.0]
@@ -252,8 +261,13 @@ private final class StatusItemView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    func update(with metrics: SystemMetrics, enabledRings: [Bool]) {
+    func update(
+        with metrics: SystemMetrics,
+        enabledRings: [Bool],
+        networkEnabled: Bool
+    ) {
         self.metrics = metrics
+        self.networkEnabled = networkEnabled
 
         animationStartValues = displayedRingValues
         animationTargetValues = [metrics.cpu, metrics.gpu, metrics.memory]
@@ -279,7 +293,7 @@ private final class StatusItemView: NSView {
             displayedRingValues = animationTargetValues
         }
 
-        let accessibilityValue = String(
+        var accessibilityParts = [String(
             format: "CPU %.0f%%, GPU %.0f%%, MEM %.0f%%, SSD %.0f%%, upload %@, download %@",
             metrics.cpu * 100,
             metrics.gpu * 100,
@@ -287,8 +301,17 @@ private final class StatusItemView: NSView {
             metrics.disk * 100,
             Self.formatRate(metrics.uploadBytesPerSecond).accessibilityText,
             Self.formatRate(metrics.downloadBytesPerSecond).accessibilityText
-        )
-        setAccessibilityValue(accessibilityValue)
+        )]
+        if !networkEnabled {
+            accessibilityParts[0] = String(
+                format: "CPU %.0f%%, GPU %.0f%%, MEM %.0f%%, SSD %.0f%%",
+                metrics.cpu * 100,
+                metrics.gpu * 100,
+                metrics.memory * 100,
+                metrics.disk * 100
+            )
+        }
+        setAccessibilityValue(accessibilityParts.joined(separator: ", "))
         needsDisplay = true
     }
 
@@ -353,6 +376,8 @@ private final class StatusItemView: NSView {
             ringColors[index].setStroke()
             path.stroke()
         }
+
+        guard networkEnabled else { return }
 
         let attributes = Self.networkAttributes()
         drawRate(
@@ -439,8 +464,9 @@ private enum RingPalette {
 }
 
 private enum StatusItemLayout {
-    // Fixed width keeps the unit column and neighboring menu-bar items still.
-    static let width: CGFloat = 88
+    // Keep the full network block stable, but reclaim its space when hidden.
+    static let fullWidth: CGFloat = 88
+    static let ringOnlyWidth: CGFloat = 26
     static let height: CGFloat = 22
     // Calibrated against the center-to-center gap from the arrow to a
     // two-digit, one-decimal value such as "12.3".
@@ -451,6 +477,10 @@ private enum StatusItemLayout {
     static let textStartX: CGFloat = 29
     static let unitX: CGFloat = 67
     static let unitGap: CGFloat = 3
+
+    static func width(networkEnabled: Bool) -> CGFloat {
+        networkEnabled ? fullWidth : ringOnlyWidth
+    }
 }
 
 private enum MenuLanguage: String, CaseIterable {
@@ -479,6 +509,14 @@ private enum MenuLanguage: String, CaseIterable {
         case .simplifiedChinese: return "数据更新频率"
         case .traditionalChinese: return "資料更新頻率"
         case .english: return "Update Frequency"
+        }
+    }
+
+    var networkTitle: String {
+        switch self {
+        case .simplifiedChinese: return "网速"
+        case .traditionalChinese: return "網速"
+        case .english: return "Network"
         }
     }
 
@@ -518,9 +556,11 @@ private final class MenuBarController: NSObject {
     private var timer: Timer?
     private var updateInterval: TimeInterval
     private var ringEnabled: [Bool]
+    private var networkEnabled: Bool
     private var ringMenuItems: [NSMenuItem] = []
     private var currentLanguage: MenuLanguage
     private var frequencyItem: NSMenuItem?
+    private var networkMenuItem: NSMenuItem?
     private var languageItem: NSMenuItem?
     private var quitItem: NSMenuItem?
     private var frequencyMenuItems: [NSMenuItem] = []
@@ -529,29 +569,33 @@ private final class MenuBarController: NSObject {
 
     private static let updateIntervalKey = "updateInterval"
     private static let ringVisibilityKey = "ringVisibility"
+    private static let networkVisibilityKey = "networkVisibility"
     private static let languageKey = "language"
     private static let defaultRingVisibility = [true, true, true]
+    private static let defaultNetworkVisibility = true
     private static let supportedIntervals: [TimeInterval] = [1, 5, 10, 30, 60]
 
     override init() {
         let savedInterval = UserDefaults.standard.double(forKey: Self.updateIntervalKey)
         updateInterval = Self.supportedIntervals.contains(savedInterval) ? savedInterval : 5
         ringEnabled = Self.loadRingVisibility()
+        networkEnabled = Self.loadNetworkVisibility()
         currentLanguage = Self.loadLanguage()
 
-        statusItem = NSStatusBar.system.statusItem(withLength: StatusItemLayout.width)
+        let initialWidth = StatusItemLayout.width(networkEnabled: networkEnabled)
+        statusItem = NSStatusBar.system.statusItem(withLength: initialWidth)
         statusView = StatusItemView(
             frame: NSRect(
                 x: 0,
                 y: 0,
-                width: StatusItemLayout.width,
+                width: initialWidth,
                 height: StatusItemLayout.height
             )
         )
 
         super.init()
 
-        statusItem.length = StatusItemLayout.width
+        statusItem.length = initialWidth
         if let button = statusItem.button {
             button.title = ""
             button.image = nil
@@ -580,6 +624,10 @@ private final class MenuBarController: NSObject {
             makeLegendItem(title: "MEM", color: RingPalette.memory, index: 2)
         ]
         ringMenuItems.forEach { menu.addItem($0) }
+
+        let networkMenuItem = makeNetworkItem()
+        self.networkMenuItem = networkMenuItem
+        menu.addItem(networkMenuItem)
         menu.addItem(.separator())
 
         let frequencyMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -648,6 +696,13 @@ private final class MenuBarController: NSObject {
         return item
     }
 
+    private func makeNetworkItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "", action: #selector(toggleNetwork(_:)), keyEquivalent: "")
+        item.target = self
+        item.state = networkEnabled ? .on : .off
+        return item
+    }
+
     private static func loadRingVisibility() -> [Bool] {
         guard
             let stored = UserDefaults.standard.array(forKey: ringVisibilityKey),
@@ -658,6 +713,13 @@ private final class MenuBarController: NSObject {
 
         let values = stored.compactMap { ($0 as? NSNumber)?.boolValue }
         return values.count == defaultRingVisibility.count ? values : defaultRingVisibility
+    }
+
+    private static func loadNetworkVisibility() -> Bool {
+        guard UserDefaults.standard.object(forKey: networkVisibilityKey) != nil else {
+            return defaultNetworkVisibility
+        }
+        return UserDefaults.standard.bool(forKey: networkVisibilityKey)
     }
 
     private static func loadLanguage() -> MenuLanguage {
@@ -690,6 +752,7 @@ private final class MenuBarController: NSObject {
 
     private func refreshLocalizedMenu() {
         frequencyItem?.title = currentLanguage.updateFrequencyTitle
+        networkMenuItem?.title = currentLanguage.networkTitle
         languageItem?.title = currentLanguage.languageMenuTitle
         quitItem?.title = currentLanguage.quitTitle
         statusView.setAccessibilityLabel(currentLanguage.accessibilityLabel)
@@ -700,6 +763,7 @@ private final class MenuBarController: NSObject {
         }
 
         refreshFrequencySelection()
+        refreshNetworkSelection()
         refreshLanguageSelection()
     }
 
@@ -718,8 +782,20 @@ private final class MenuBarController: NSObject {
     }
 
     private func sampleAndUpdate() {
-        let metrics = collector.sample()
-        statusView.update(with: metrics, enabledRings: ringEnabled)
+        let metrics = collector.sample(networkEnabled: networkEnabled)
+        statusView.update(
+            with: metrics,
+            enabledRings: ringEnabled,
+            networkEnabled: networkEnabled
+        )
+    }
+
+    private func updateStatusItemLayout() {
+        let width = StatusItemLayout.width(networkEnabled: networkEnabled)
+        statusItem.length = width
+        if let button = statusItem.button {
+            statusView.frame = button.bounds
+        }
     }
 
     private func showMenu() {
@@ -747,6 +823,10 @@ private final class MenuBarController: NSObject {
             guard let value = item.representedObject as? NSNumber else { continue }
             item.state = value.doubleValue == updateInterval ? .on : .off
         }
+    }
+
+    private func refreshNetworkSelection() {
+        networkMenuItem?.state = networkEnabled ? .on : .off
     }
 
     private func refreshRingSelection() {
@@ -780,6 +860,14 @@ private final class MenuBarController: NSObject {
         ringEnabled[index].toggle()
         UserDefaults.standard.set(ringEnabled.map { NSNumber(value: $0) }, forKey: Self.ringVisibilityKey)
         refreshRingSelection()
+        sampleAndUpdate()
+    }
+
+    @objc private func toggleNetwork(_ sender: NSMenuItem) {
+        networkEnabled.toggle()
+        UserDefaults.standard.set(networkEnabled, forKey: Self.networkVisibilityKey)
+        refreshNetworkSelection()
+        updateStatusItemLayout()
         sampleAndUpdate()
     }
 
