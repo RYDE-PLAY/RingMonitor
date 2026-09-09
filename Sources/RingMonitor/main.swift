@@ -570,11 +570,6 @@ private enum StatusItemLayout {
     static func width(networkEnabled: Bool) -> CGFloat {
         networkEnabled ? fullWidth : ringOnlyWidth
     }
-
-    static func width(forNetworkProgress progress: CGFloat) -> CGFloat {
-        let clamped = min(max(progress, 0), 1)
-        return ringOnlyWidth + (fullWidth - ringOnlyWidth) * clamped
-    }
 }
 
 private enum MenuLanguage: String, CaseIterable {
@@ -644,8 +639,6 @@ private enum MenuLanguage: String, CaseIterable {
 private final class MenuBarController: NSObject {
     private enum NetworkTransitionPhase: Equatable {
         case hidingContent
-        case shrinkingWidth
-        case expandingWidth
         case waitingForSample
         case revealingContent
     }
@@ -674,7 +667,6 @@ private final class MenuBarController: NSObject {
     private var networkTransitionDuration: TimeInterval = 0
     private var networkTransitionStartValue: CGFloat = 0
     private var networkTransitionTargetValue: CGFloat = 0
-    private var networkWidthProgress: CGFloat = 1
     private var networkContentProgress: CGFloat = 1
     private var networkSampleReady = true
 
@@ -692,7 +684,6 @@ private final class MenuBarController: NSObject {
         ringEnabled = Self.loadRingVisibility()
         networkEnabled = Self.loadNetworkVisibility()
         currentLanguage = Self.loadLanguage()
-        networkWidthProgress = networkEnabled ? 1 : 0
         networkContentProgress = networkEnabled ? 1 : 0
 
         let initialWidth = StatusItemLayout.width(networkEnabled: networkEnabled)
@@ -714,6 +705,14 @@ private final class MenuBarController: NSObject {
             button.image = nil
             button.target = self
             button.action = #selector(statusItemClicked(_:))
+            // The status item owns the click target, but the content is drawn
+            // by our view. Avoid AppKit's pressed-button highlight becoming a
+            // translucent block while the status item is reflowed.
+            button.isBordered = false
+            if let buttonCell = button.cell as? NSButtonCell {
+                buttonCell.highlightsBy = []
+            }
+            button.focusRingType = .none
             statusView.frame = button.bounds
             statusView.autoresizingMask = [.width, .height]
             button.addSubview(statusView)
@@ -943,8 +942,7 @@ private final class MenuBarController: NSObject {
     }
 
     private func updateStatusItemLayout() {
-        let width = StatusItemLayout.width(forNetworkProgress: networkWidthProgress)
-        statusItem.length = width
+        statusItem.length = StatusItemLayout.width(networkEnabled: networkEnabled)
     }
 
     private func beginNetworkPhase(
@@ -965,9 +963,6 @@ private final class MenuBarController: NSObject {
         case .hidingContent, .revealingContent:
             networkContentProgress = from
             statusView.setNetworkVisibility(progress: from, fadingOut: fadingOut)
-        case .shrinkingWidth, .expandingWidth:
-            networkWidthProgress = from
-            updateStatusItemLayout()
         case .waitingForSample:
             break
         }
@@ -996,7 +991,6 @@ private final class MenuBarController: NSObject {
         networkTransitionPhase = nil
 
         let finalProgress: CGFloat = networkEnabled ? 1 : 0
-        networkWidthProgress = finalProgress
         networkContentProgress = finalProgress
         updateStatusItemLayout()
         statusView.setNetworkVisibility(progress: finalProgress, fadingOut: false)
@@ -1019,9 +1013,6 @@ private final class MenuBarController: NSObject {
         case .hidingContent:
             networkContentProgress = value
             statusView.setNetworkVisibility(progress: value, fadingOut: true)
-        case .shrinkingWidth, .expandingWidth:
-            networkWidthProgress = value
-            updateStatusItemLayout()
         case .revealingContent:
             networkContentProgress = value
             statusView.setNetworkVisibility(progress: value, fadingOut: false)
@@ -1033,31 +1024,11 @@ private final class MenuBarController: NSObject {
 
         switch phase {
         case .hidingContent:
-            beginNetworkPhase(
-                .shrinkingWidth,
-                from: networkWidthProgress,
-                to: 0,
-                duration: 0.18,
-                fadingOut: true
-            )
-        case .shrinkingWidth:
-            finishNetworkTransition()
-        case .expandingWidth:
-            if networkSampleReady {
-                beginNetworkPhase(
-                    .revealingContent,
-                    from: networkContentProgress,
-                    to: 1,
-                    duration: 0.12,
-                    fadingOut: false
-                )
-            } else {
-                waitForNetworkSample()
-            }
-        case .revealingContent:
             finishNetworkTransition()
         case .waitingForSample:
             break
+        case .revealingContent:
+            finishNetworkTransition()
         }
     }
 
@@ -1079,6 +1050,10 @@ private final class MenuBarController: NSObject {
             at: NSPoint(x: statusView.bounds.minX, y: statusView.bounds.minY - 10),
             in: statusView
         )
+        // A custom status-item view does not need to remain in the pressed
+        // state after its menu closes. Clearing it here prevents AppKit's
+        // transient highlight from being left behind during a reflow.
+        statusItem.button?.highlight(false)
     }
 
     private func refreshFrequencySelection() {
@@ -1149,13 +1124,12 @@ private final class MenuBarController: NSObject {
             networkSampleReady = false
             networkContentProgress = 0
             statusView.setNetworkVisibility(progress: 0, fadingOut: false)
-            beginNetworkPhase(
-                .expandingWidth,
-                from: networkWidthProgress,
-                to: 1,
-                duration: 0.18,
-                fadingOut: false
-            )
+            // Reflow the status bar once, after the menu has disappeared.
+            // Animating NSStatusItem.length frame by frame makes macOS lay
+            // out every neighboring item repeatedly, which causes the
+            // visible double-step and gray reflow artifacts.
+            updateStatusItemLayout()
+            waitForNetworkSample()
         } else {
             networkSampleReady = false
             beginNetworkPhase(
