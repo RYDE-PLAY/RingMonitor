@@ -700,7 +700,32 @@ private final class MenuBarController: NSObject {
         let item = NSMenuItem(title: "", action: #selector(toggleNetwork(_:)), keyEquivalent: "")
         item.target = self
         item.state = networkEnabled ? .on : .off
+        refreshNetworkTitle(for: item)
         return item
+    }
+
+    private func refreshNetworkTitle(for item: NSMenuItem? = nil) {
+        guard let item = item ?? networkMenuItem else { return }
+
+        let font = NSFont.menuFont(ofSize: 13)
+        let attributedTitle = NSMutableAttributedString()
+        attributedTitle.append(NSAttributedString(
+            string: "● ",
+            attributes: [
+                .font: font,
+                // Match the label color so the network row follows the same
+                // alignment pattern without introducing a fourth ring color.
+                .foregroundColor: NSColor.labelColor
+            ]
+        ))
+        attributedTitle.append(NSAttributedString(
+            string: currentLanguage.networkTitle,
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor.labelColor
+            ]
+        ))
+        item.attributedTitle = attributedTitle
     }
 
     private static func loadRingVisibility() -> [Bool] {
@@ -752,7 +777,7 @@ private final class MenuBarController: NSObject {
 
     private func refreshLocalizedMenu() {
         frequencyItem?.title = currentLanguage.updateFrequencyTitle
-        networkMenuItem?.title = currentLanguage.networkTitle
+        refreshNetworkTitle()
         languageItem?.title = currentLanguage.languageMenuTitle
         quitItem?.title = currentLanguage.quitTitle
         statusView.setAccessibilityLabel(currentLanguage.accessibilityLabel)
