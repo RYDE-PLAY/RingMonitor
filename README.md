@@ -1,4 +1,8 @@
-# RingMonitor
+<p align="center">
+  <img src="docs/icon-preview.png" width="128" alt="RingMonitor 图标">
+</p>
+
+<h1 align="center">RingMonitor</h1>
 
 一个 Apple Activity 风格的资源使用率菜单栏监控。
 
