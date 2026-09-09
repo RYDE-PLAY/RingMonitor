@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 200 200" role="img" aria-labelledby="title">
+  <title id="title">RingMonitor icon exported from Figma Make design</title>
+
+  <!-- App-icon tile from the supplied Figma Make source. -->
+  <rect width="200" height="200" rx="45" fill="#111111"/>
+
+  <!-- Three ring tracks. -->
+  <g fill="none" stroke-width="14">
+    <circle cx="100" cy="100" r="74" stroke="#3D0015"/>
+    <circle cx="100" cy="100" r="57" stroke="#0A2B15"/>
+    <circle cx="100" cy="100" r="40" stroke="#001E2E"/>
+  </g>
+
+  <!-- 300-degree active arcs, all starting at 12 o'clock. -->
+  <g fill="none" stroke-linecap="round" stroke-width="14">
+    <path d="M 100 26 A 74 74 0 1 0 174 100" stroke="#FF375F"/>
+    <path d="M 100 43 A 57 57 0 1 0 157 100" stroke="#30D158"/>
+    <path d="M 100 60 A 40 40 0 1 0 140 100" stroke="#5AC8FA"/>
+  </g>
+
+  <!-- One centered, smooth teardrop pointer aimed at the upper-right. -->
+  <g transform="translate(100 100) rotate(45)">
+    <path
+      d="M 7.94 1.00
+         A 8 8 0 0 1 -7.94 1.00
+         L -0.99 -55.88
+         A 1 1 0 1 1 0.99 -55.88 Z"
+      fill="#FFFFFF"/>
+  </g>
+</svg>

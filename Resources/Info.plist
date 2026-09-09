@@ -8,6 +8,8 @@
 	<string>RingMonitor</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.ryde.RingMonitor</string>
+	<key>CFBundleIconFile</key>
+	<string>RingMonitor</string>
 	<key>CFBundleName</key>
 	<string>RingMonitor</string>
 	<key>CFBundlePackageType</key>
