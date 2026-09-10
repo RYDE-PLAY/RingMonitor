@@ -822,21 +822,24 @@ private final class MenuBarController: NSObject {
         guard let item = item ?? networkMenuItem else { return }
 
         let font = NSFont.menuFont(ofSize: 13)
+        let textColor = NSColor.labelColor
         let attributedTitle = NSMutableAttributedString()
+        let markerWidth = ("● " as NSString).size(withAttributes: [.font: font]).width
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
         attributedTitle.append(NSAttributedString(
-            string: "● ",
+            string: " ",
             attributes: [
                 .font: font,
-                // Match the label color so the network row follows the same
-                // alignment pattern without introducing a fourth ring color.
-                .foregroundColor: NSColor.labelColor
+                // Reserve exactly the same leading width as the ring legend
+                // without putting a marker character in the menu title.
+                .kern: markerWidth - spaceWidth
             ]
         ))
         attributedTitle.append(NSAttributedString(
             string: currentLanguage.networkTitle,
             attributes: [
                 .font: font,
-                .foregroundColor: NSColor.labelColor
+                .foregroundColor: textColor
             ]
         ))
         item.attributedTitle = attributedTitle
