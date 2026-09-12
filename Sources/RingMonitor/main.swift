@@ -1076,12 +1076,24 @@ private final class MenuBarController: NSObject {
         // highlights the ring and rate readout as one control.
         statusItem.button?.highlight(true)
         defer { statusItem.button?.highlight(false) }
+        // NSStatusBar wraps the button in a host view with its own horizontal
+        // padding (8 pt on current macOS). The native pressed background spans
+        // that host region, so anchoring the menu at statusView.x = 0 leaves
+        // the menu visibly inset to the right. Convert the host view's origin
+        // into our content view instead of hard-coding the system padding.
+        let menuLeadingX: CGFloat
+        if
+            let button = statusItem.button,
+            let hostView = button.window?.contentView
+        {
+            menuLeadingX = statusView.convert(hostView.bounds.origin, from: hostView).x - 4
+        } else {
+            menuLeadingX = statusView.bounds.minX - 4
+        }
+
         menu.popUp(
             positioning: nil,
-            // NSMenu treats this as the menu's top-left corner when no item
-            // is supplied. Align it with the status item's leading edge,
-            // rather than placing the menu's left edge at the ring center.
-            at: NSPoint(x: statusView.bounds.minX, y: statusView.bounds.minY - 10),
+            at: NSPoint(x: menuLeadingX, y: statusView.bounds.minY - 10),
             in: statusView
         )
     }
