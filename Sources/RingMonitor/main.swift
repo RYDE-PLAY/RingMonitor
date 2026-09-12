@@ -360,7 +360,10 @@ private final class StatusItemView: NSView {
         super.draw(dirtyRect)
 
         let center = NSPoint(
-            x: StatusItemLayout.ringCenterX,
+            // A ring-only status item uses the standard square 22×22 button.
+            // Keep the 13 pt optical offset when the network block is present,
+            // but center the ring when the item collapses to icon-only width.
+            x: min(StatusItemLayout.ringCenterX, bounds.midX),
             y: StatusItemLayout.ringCenterY
         )
         let values = displayedRingValues
@@ -555,8 +558,11 @@ private enum RingPalette {
 private enum StatusItemLayout {
     // Keep the full network block stable, but reclaim its space when hidden.
     static let fullWidth: CGFloat = 88
-    static let ringOnlyWidth: CGFloat = 26
     static let height: CGFloat = 22
+    // Match the standard square status-item button. AppKit adds the normal
+    // inter-item host padding around this 22 pt button, so its highlighted
+    // region ends at the same midpoint boundary as neighboring menu-bar apps.
+    static let ringOnlyWidth: CGFloat = height
     // Calibrated against the center-to-center gap from the arrow to a
     // two-digit, one-decimal value such as "12.3".
     static let ringCenterX: CGFloat = 13
@@ -662,6 +668,7 @@ private final class MenuBarController: NSObject {
     private var languageMenuItems: [NSMenuItem] = []
     private let languageMenu = NSMenu()
     private var networkTransitionTimer: Timer?
+    private var networkBootstrapTimer: Timer?
     private var networkTransitionPhase: NetworkTransitionPhase?
     private var networkTransitionStartUptime: TimeInterval = 0
     private var networkTransitionDuration: TimeInterval = 0
@@ -678,6 +685,7 @@ private final class MenuBarController: NSObject {
     private static let defaultNetworkVisibility = true
     private static let supportedIntervals: [TimeInterval] = [1, 5, 10, 30, 60]
     private static let networkContentAnimationDuration: TimeInterval = 1.0
+    private static let networkBootstrapSampleDelay: TimeInterval = 0.5
 
     override init() {
         let savedInterval = UserDefaults.standard.double(forKey: Self.updateIntervalKey)
@@ -706,13 +714,8 @@ private final class MenuBarController: NSObject {
             button.image = nil
             button.target = self
             button.action = #selector(statusItemClicked(_:))
-            // The status item owns the click target, but the content is drawn
-            // by our view. Avoid AppKit's pressed-button highlight becoming a
-            // translucent block while the status item is reflowed.
-            button.isBordered = false
-            if let buttonCell = button.cell as? NSButtonCell {
-                buttonCell.highlightsBy = []
-            }
+            // Keep the system button appearance beneath our transparent content.
+            button.isBordered = true
             button.focusRingType = .none
             statusView.frame = button.bounds
             statusView.autoresizingMask = [.width, .height]
@@ -989,6 +992,28 @@ private final class MenuBarController: NSObject {
         networkTransitionPhase = .waitingForSample
     }
 
+    private func scheduleNetworkBootstrapSample() {
+        networkBootstrapTimer?.invalidate()
+
+        let timer = Timer(
+            timeInterval: Self.networkBootstrapSampleDelay,
+            target: self,
+            selector: #selector(networkBootstrapTimerDidFire(_:)),
+            userInfo: nil,
+            repeats: false
+        )
+        RunLoop.main.add(timer, forMode: .common)
+        networkBootstrapTimer = timer
+    }
+
+    @objc private func networkBootstrapTimerDidFire(_ timer: Timer) {
+        guard timer === networkBootstrapTimer else { return }
+        networkBootstrapTimer = nil
+
+        guard networkEnabled, networkTransitionPhase == .waitingForSample else { return }
+        sampleAndUpdate()
+    }
+
     private func finishNetworkTransition() {
         networkTransitionTimer?.invalidate()
         networkTransitionTimer = nil
@@ -1046,6 +1071,11 @@ private final class MenuBarController: NSObject {
         frequencyMenu.appearance = appearance
         languageMenu.appearance = appearance
 
+        // Keep the native pressed appearance for the entire status item while
+        // its menu is tracking. In the network layout this intentionally
+        // highlights the ring and rate readout as one control.
+        statusItem.button?.highlight(true)
+        defer { statusItem.button?.highlight(false) }
         menu.popUp(
             positioning: nil,
             // NSMenu treats this as the menu's top-left corner when no item
@@ -1054,10 +1084,6 @@ private final class MenuBarController: NSObject {
             at: NSPoint(x: statusView.bounds.minX, y: statusView.bounds.minY - 10),
             in: statusView
         )
-        // A custom status-item view does not need to remain in the pressed
-        // state after its menu closes. Clearing it here prevents AppKit's
-        // transient highlight from being left behind during a reflow.
-        statusItem.button?.highlight(false)
     }
 
     private func refreshFrequencySelection() {
@@ -1109,7 +1135,6 @@ private final class MenuBarController: NSObject {
         networkEnabled.toggle()
         UserDefaults.standard.set(networkEnabled, forKey: Self.networkVisibilityKey)
         refreshNetworkSelection()
-        sampleAndUpdate()
 
         let targetState = networkEnabled
         // Let AppKit finish dismissing the menu before changing the status
@@ -1124,6 +1149,9 @@ private final class MenuBarController: NSObject {
     private func startNetworkTransition(to enabled: Bool) {
         guard networkEnabled == enabled else { return }
 
+        networkBootstrapTimer?.invalidate()
+        networkBootstrapTimer = nil
+
         if enabled {
             networkSampleReady = false
             networkContentProgress = 0
@@ -1134,8 +1162,15 @@ private final class MenuBarController: NSObject {
             // visible double-step and gray reflow artifacts.
             updateStatusItemLayout()
             waitForNetworkSample()
+
+            // The first network sample only establishes a counter baseline.
+            // Take it immediately, then take a short follow-up sample instead
+            // of waiting for the user-selected global refresh interval.
+            sampleAndUpdate()
+            scheduleNetworkBootstrapSample()
         } else {
             networkSampleReady = false
+            sampleAndUpdate()
             beginNetworkPhase(
                 .hidingContent,
                 from: networkContentProgress,
