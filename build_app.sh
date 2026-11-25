@@ -7,7 +7,7 @@ APP_DIR="$ROOT_DIR/$APP_NAME.app"
 BUILD_ARCH="${BUILD_ARCH:-$(uname -m)}"
 RELEASE_DIR="$ROOT_DIR/.build/${BUILD_ARCH}-apple-macosx/release"
 APP_VERSION="${APP_VERSION:-}"
-ICON_SOURCE="$ROOT_DIR/docs/figma-icon.png"
+ICON_SOURCE="$ROOT_DIR/docs/app-icon.png"
 ICON_BUILD_DIR="$ROOT_DIR/.build/$BUILD_ARCH-apple-macosx/RingMonitor.iconset"
 ICON_FILE="$ROOT_DIR/.build/$BUILD_ARCH-apple-macosx/RingMonitor.icns"
 
@@ -27,7 +27,7 @@ if [[ ! -f "$ICON_SOURCE" ]]; then
     exit 1
 fi
 
-# Generate the standard macOS iconset from the deterministic Figma export.
+# Generate the standard macOS iconset from the shared transparent PNG source.
 # sips and iconutil are available on the macOS build runner, so releases do
 # not depend on a third-party SVG renderer.
 rm -rf "$ICON_BUILD_DIR"
